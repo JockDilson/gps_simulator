@@ -7,7 +7,7 @@ from datetime import datetime
 import threading
 
 # Constants
-STEP_SIZE = 0.0001  # Small step size for realistic random walk
+STEP_SIZE = 0.0001  # Small step size for realistic random walk (0.0001 = 11 meters)
 EARTH_RADIUS = 6371000  # In meters (for haversine calculation)
 
 # Global flags
