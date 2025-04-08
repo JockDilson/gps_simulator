@@ -5,10 +5,18 @@ import random
 import time
 from datetime import datetime
 import threading
+import requests
+
+# Configuration
+SERVER_URL = "http://localhost:5000/api/gps"
+SIMULATE_ISSUES = True
+UPDATE_INTERVAL = 1  # seconds
 
 # Constants
-STEP_SIZE = 0.0001  # Small step size for realistic random walk (0.0001 = 11 meters)
-EARTH_RADIUS = 6371000  # In meters (for haversine calculation)
+STEP_SIZE = 0.0001  # Base step size for random walk (~11m)
+EARTH_RADIUS = 6371000  # In meters
+SIGNAL_LOSS_CHANCE = 0.2  # 20% chance to skip ping
+MAX_JITTER = 0.00005  # ~5m jitter for noise simulation
 
 # Global flags
 simulating = False
@@ -16,15 +24,15 @@ previous_coords = None
 
 # --- Utility Functions ---
 
-# Calculate distance in meters between two GPS points
+# Calculate great-circle distance using Haversine formula
 def haversine(lat1, lon1, lat2, lon2):
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
     dlat = lat2 - lat1
     dlon = lon2 - lon1
-    a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
+    a = math.sin(dlat/2)**2 + math.cos(lat1)*math.cos(lat2)*math.sin(dlon/2)**2
     return EARTH_RADIUS * 2 * math.asin(math.sqrt(a))
 
-# Calculate compass direction between two GPS points
+# Calculate direction (bearing) from point A to B
 def calculate_bearing(lat1, lon1, lat2, lon2):
     lat1, lat2 = map(math.radians, [lat1, lat2])
     dlon = math.radians(lon2 - lon1)
@@ -33,16 +41,19 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
     bearing = math.degrees(math.atan2(x, y))
     return (bearing + 360) % 360
 
-# Generate speed, heading, altitude, accuracy
+# Add random jitter for realistic GPS inaccuracy
+def add_jitter(coord, max_jitter=MAX_JITTER):
+    return coord + random.uniform(-max_jitter, max_jitter)
+
+# Generate speed and heading from coordinates and time
 def generate_metadata(prev_lat, prev_lon, lat, lon, time_delta):
     distance = haversine(prev_lat, prev_lon, lat, lon)
     speed = distance / time_delta if time_delta > 0 else 0
     heading = calculate_bearing(prev_lat, prev_lon, lat, lon)
     return speed, heading
 
-# --- Simulation Loop ---
+# --- Main Simulation Loop ---
 
-# Main loop that emits GPS data every second
 def simulate_loop(start_lat, start_lon, update_callback):
     global simulating, previous_coords
 
@@ -51,9 +62,17 @@ def simulate_loop(start_lat, start_lon, update_callback):
     last_time = time.time()
 
     while simulating:
-        # Small random walk step
+        # Simulate GPS signal loss (skip sending data)
+        if random.random() < SIGNAL_LOSS_CHANCE:
+            update_callback("[Signal Lost] No GPS data this cycle.")
+            time.sleep(1)
+            continue
+
+        # Apply small random walk step + jitter for realism
         lat += random.uniform(-STEP_SIZE, STEP_SIZE)
         lon += random.uniform(-STEP_SIZE, STEP_SIZE)
+        lat = add_jitter(lat)
+        lon = add_jitter(lon)
 
         # Time since last point
         current_time = time.time()
@@ -61,50 +80,53 @@ def simulate_loop(start_lat, start_lon, update_callback):
         last_time = current_time
 
         # Generate extra metadata
-        speed, heading= generate_metadata(
+        speed, heading = generate_metadata(
             previous_coords[0], previous_coords[1], lat, lon, time_delta
         )
+        accuracy = round(random.uniform(3.0, 25.0), 2)  # In meters
+
         previous_coords = (lat, lon)
 
-        # Final output payload
+        # Output GPS data as dictionary
         payload = {
             "device_id": "mock_tracker_01",
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "latitude": round(lat, 6),
             "longitude": round(lon, 6),
             "speed": round(speed, 2),
-            "heading": round(heading, 2)
+            "heading": round(heading, 2),
+            "accuracy": accuracy
         }
+        gps_data = payload
 
-        # Send to UI in thread-safe way
         update_callback(payload)
         time.sleep(1)
 
-# --- UI Functions ---
+# --- UI Controls ---
 
-# Start simulation in background thread
 def start_simulation(output_widget):
     global simulating
     if not simulating:
         simulating = True
 
-        # Safe way to update tkinter widgets from thread
+        # Thread-safe UI update function
         def update_output(payload):
             output_widget.after(0, lambda: (
                 output_widget.insert(tk.END, str(payload) + "\n"),
                 output_widget.see(tk.END)
             ))
 
-        thread = threading.Thread(target=simulate_loop, args=(12.9356, 77.6145, update_output))
+        thread = threading.Thread(
+            target=simulate_loop,
+            args=(12.9356, 77.6145, update_output)
+        )
         thread.daemon = True
         thread.start()
 
-# Stop the simulation
 def stop_simulation():
     global simulating
     simulating = False
 
-# Clear output area
 def clear_output(output_widget):
     output_widget.delete(1.0, tk.END)
 
@@ -114,11 +136,9 @@ root = tk.Tk()
 root.title("GPS Simulator")
 root.geometry("650x450")
 
-# Output display area
 output = scrolledtext.ScrolledText(root, wrap=tk.WORD, font=("Courier", 10))
 output.pack(padx=10, pady=10, expand=True, fill="both")
 
-# Button controls
 btn_frame = tk.Frame(root)
 btn_frame.pack(pady=5)
 
@@ -131,5 +151,6 @@ stop_btn.grid(row=0, column=1, padx=5)
 clear_btn = tk.Button(btn_frame, text="🧹 Clear", width=10, command=lambda: clear_output(output))
 clear_btn.grid(row=0, column=2, padx=5)
 
-# Start the GUI event loop
+# Launch the GUI
 root.mainloop()
+
